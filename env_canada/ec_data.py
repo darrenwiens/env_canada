@@ -1,8 +1,10 @@
+import random
 import re
+import socket
 import xml.etree.ElementTree as et
 
 from geopy import distance
-from ratelimit import limits, RateLimitException
+from kombu import Connection, Consumer, Exchange, Queue
 import requests
 
 SITE_LIST_URL = 'https://dd.weather.gc.ca/citypage_weather/docs/site_list_en.csv'
@@ -11,6 +13,12 @@ AQHI_SITE_LIST_URL = 'https://dd.weather.gc.ca/air_quality/doc/AQHI_XML_File_Lis
 WEATHER_URL = 'https://dd.weather.gc.ca/citypage_weather/xml/{}_{}.xml'
 AQHI_OBSERVATION_URL = 'https://dd.weather.gc.ca/air_quality/aqhi/{}/observation/realtime/xml/AQ_OBS_{}_CURRENT.xml'
 AQHI_FORECAST_URL = 'https://dd.weather.gc.ca/air_quality/aqhi/{}/forecast/realtime/xml/AQ_FCST_{}_CURRENT.xml'
+
+AMQP_URL = 'amqps://anonymous:anonymous@dd.weather.gc.ca/'
+AMQP_EXCHANGE = 'xpublic'
+WEATHER_QUEUE_NAME = 'q_anonymous_env-canada-pypi_' + str(random.randrange(100000))
+WEATHER_ROUTING_KEY = 'v02.post.citypage_weather.xml.{}.#'
+WEATHER_MESSAGE = '/citypage_weather/xml/{}_{}.xml'
 
 conditions_meta = {
     'temperature': {
@@ -198,15 +206,6 @@ metadata_meta = {
 }
 
 
-def ignore_ratelimit_error(fun):
-    def res(*args, **kwargs):
-        try:
-            return fun(*args, **kwargs)
-        except RateLimitException:
-            return None
-    return res
-
-
 class ECData(object):
 
     """Get weather data from Environment Canada."""
@@ -236,11 +235,27 @@ class ECData(object):
             self.station_id = self.closest_site(coordinates[0],
                                                 coordinates[1])
 
-        self.update()
+        """Initialize data"""
+        self.fetch_new_data()
 
-    @ignore_ratelimit_error
-    @limits(calls=2, period=60)
+        """Setup AMQP"""
+        self.connection = Connection(AMQP_URL)
+        self.weather_queue = Queue(name=WEATHER_QUEUE_NAME,
+                                   exchange=Exchange(AMQP_EXCHANGE, no_declare=True),
+                                   routing_key=WEATHER_ROUTING_KEY.format(self.station_id.split('/')[0]))
+
     def update(self):
+        try:
+            with Consumer(channel=self.connection, queues=self.weather_queue, callbacks=[self.process_message]):
+                self.connection.drain_events(timeout=5)
+        except socket.timeout:
+            pass
+
+    def process_message(self, body, message):
+        if WEATHER_MESSAGE.format(self.station_id, self.language[0]) in body:
+            self.fetch_new_data()
+
+    def fetch_new_data(self):
         """Get the latest data from Environment Canada."""
         weather_result = requests.get(WEATHER_URL.format(self.station_id,
                                                          self.language[0]),
