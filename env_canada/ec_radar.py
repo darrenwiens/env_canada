@@ -14,26 +14,25 @@ from requests_futures.sessions import FuturesSession
 
 # Natural Resources Canada
 
-basemap_url = 'https://maps.geogratis.gc.ca/wms/CBMT?service=wms&version=1.3.0&request=GetMap&layers=CBMT&styles=&CRS=epsg:4326&BBOX={south},{west},{north},{east}&width={width}&height={height}&format=image/png'
+basemap_url = "https://maps.geogratis.gc.ca/wms/CBMT?service=wms&version=1.3.0&request=GetMap&layers=CBMT&styles=&CRS=epsg:4326&BBOX={south},{west},{north},{east}&width={width}&height={height}&format=image/png"
 
 # Environment Canada
 
-layer = {
-    'rain': 'RADAR_1KM_RRAI',
-    'snow': 'RADAR_1KM_RSNO'
-}
+layer = {"rain": "RADAR_1KM_RRAI", "snow": "RADAR_1KM_RSNO"}
 
-capabilities_url = 'https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&LAYER={layer}'
-wms_namespace = {'wms': 'http://www.opengis.net/wms'}
+capabilities_url = "https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&LAYER={layer}"
+wms_namespace = {"wms": "http://www.opengis.net/wms"}
 dimension_xpath = './/wms:Layer[wms:Name="{layer}"]/wms:Dimension'
 
-radar_url = 'https://geo.weather.gc.ca/geomet?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&BBOX={south},{west},{north},{east}&CRS=EPSG:4326&WIDTH={width}&HEIGHT={height}&LAYERS={layer}&FORMAT=image/png&TIME={time}'
+radar_url = "https://geo.weather.gc.ca/geomet?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&BBOX={south},{west},{north},{east}&CRS=EPSG:4326&WIDTH={width}&HEIGHT={height}&LAYERS={layer}&FORMAT=image/png&TIME={time}"
 
 
 def get_station_coords(station_id):
-    with open(os.path.join(os.path.dirname(__file__), 'radar_sites.json')) as sites_file:
+    with open(
+        os.path.join(os.path.dirname(__file__), "radar_sites.json")
+    ) as sites_file:
         site_dict = json.loads(sites_file.read())
-    return site_dict[station_id]['lat'], site_dict[station_id]['lon']
+    return site_dict[station_id]["lat"], site_dict[station_id]["lon"]
 
 
 def get_bounding_box(distance, latittude, longitude):
@@ -62,7 +61,15 @@ def get_bounding_box(distance, latittude, longitude):
 
 
 class ECRadar(object):
-    def __init__(self, station_id=None, coordinates=None, radius=200, precip_type=None, width=800, height=800):
+    def __init__(
+        self,
+        station_id=None,
+        coordinates=None,
+        radius=200,
+        precip_type=None,
+        width=800,
+        height=800,
+    ):
         """Initialize the data object."""
 
         if station_id:
@@ -71,20 +78,22 @@ class ECRadar(object):
         if precip_type:
             self.layer = layer[precip_type.lower()]
         elif datetime.date.today().month in range(4, 11):
-            self.layer = layer['rain']
+            self.layer = layer["rain"]
         else:
-            self.layer = layer['snow']
+            self.layer = layer["snow"]
 
         self.bbox = get_bounding_box(radius, coordinates[0], coordinates[1])
         self.width = width
         self.height = height
 
-        url = basemap_url.format(south=self.bbox[0],
-                                 west=self.bbox[1],
-                                 north=self.bbox[2],
-                                 east=self.bbox[3],
-                                 width=self.width,
-                                 height=self.height)
+        url = basemap_url.format(
+            south=self.bbox[0],
+            west=self.bbox[1],
+            north=self.bbox[2],
+            east=self.bbox[3],
+            width=self.width,
+            height=self.height,
+        )
         self.base_bytes = requests.get(url).content
 
         self.timestamp = datetime.datetime.now()
@@ -92,33 +101,40 @@ class ECRadar(object):
     def get_dimensions(self):
         """Get time range of available data."""
         capabilities_xml = requests.get(capabilities_url.format(layer=self.layer)).text
-        capabilities_tree = et.fromstring(capabilities_xml, parser=et.XMLParser(encoding="utf-8"))
-        dimension_string = capabilities_tree.find(dimension_xpath.format(layer=self.layer),
-                                                  namespaces=wms_namespace).text
-        start, end = [dateutil.parser.isoparse(t) for t in dimension_string.split('/')[:2]]
+        capabilities_tree = et.fromstring(
+            capabilities_xml, parser=et.XMLParser(encoding="utf-8")
+        )
+        dimension_string = capabilities_tree.find(
+            dimension_xpath.format(layer=self.layer), namespaces=wms_namespace
+        ).text
+        start, end = [
+            dateutil.parser.isoparse(t) for t in dimension_string.split("/")[:2]
+        ]
         self.timestamp = end.isoformat()
         return start, end
 
     def assemble_url(self, url_time):
         """Construct WMS query URL."""
-        url = radar_url.format(south=self.bbox[0],
-                               west=self.bbox[1],
-                               north=self.bbox[2],
-                               east=self.bbox[3],
-                               width=self.width,
-                               height=self.height,
-                               layer=self.layer,
-                               time=url_time.strftime('%Y-%m-%dT%H:%M:00Z'))
+        url = radar_url.format(
+            south=self.bbox[0],
+            west=self.bbox[1],
+            north=self.bbox[2],
+            east=self.bbox[3],
+            width=self.width,
+            height=self.height,
+            layer=self.layer,
+            time=url_time.strftime("%Y-%m-%dT%H:%M:00Z"),
+        )
         return url
 
     def combine_layers(self, radar_bytes):
         """Add radar overlay to base layer."""
         frame_bytesio = BytesIO()
-        base = Image.open(BytesIO(self.base_bytes)).convert('RGBA')
-        radar = Image.open(BytesIO(radar_bytes)).convert('RGBA')
+        base = Image.open(BytesIO(self.base_bytes)).convert("RGBA")
+        radar = Image.open(BytesIO(radar_bytes)).convert("RGBA")
         base.alpha_composite(radar)
         blend = Image.blend(base, radar, 0)
-        blend.save(frame_bytesio, 'GIF')
+        blend.save(frame_bytesio, "GIF")
         return frame_bytesio.getvalue()
 
     def get_latest_frame(self):
@@ -149,12 +165,17 @@ class ECRadar(object):
             for future in as_completed(futures):
                 responses.append(future.result())
 
-        frames = [self.combine_layers(f.content) for f in sorted(responses, key=lambda f: f.url)]
+        frames = [
+            self.combine_layers(f.content)
+            for f in sorted(responses, key=lambda f: f.url)
+        ]
 
         for f in range(3):
             frames.append(frames[-1])
 
         """Assemble animated GIF."""
         gif_frames = [imageio.imread(f) for f in frames]
-        gif_bytes = imageio.mimwrite(imageio.RETURN_BYTES, gif_frames, format='GIF', fps=10)
+        gif_bytes = imageio.mimwrite(
+            imageio.RETURN_BYTES, gif_frames, format="GIF", fps=10
+        )
         return gif_bytes
