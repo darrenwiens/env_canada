@@ -1,22 +1,20 @@
 import csv
 import io
+import random
 
 from dateutil.parser import isoparse
+from kombu import Connection, Consumer, Exchange, Queue
 from geopy import distance
-from ratelimit import limits, RateLimitException
 import requests
+import socket
 
 SITE_LIST_URL = 'https://dd.weather.gc.ca/hydrometric/doc/hydrometric_StationList.csv'
 READINGS_URL = 'https://dd.weather.gc.ca/hydrometric/csv/{prov}/hourly/{prov}_{station}_hourly_hydrometric.csv'
-
-
-def ignore_ratelimit_error(fun):
-    def res(*args, **kwargs):
-        try:
-            return fun(*args, **kwargs)
-        except RateLimitException:
-            return None
-    return res
+AMQP_URL = 'amqps://anonymous:anonymous@dd.weather.gc.ca/'
+AMQP_EXCHANGE = 'xpublic'
+HYDRO_QUEUE_NAME = 'q_anonymous_env-canada-pypi_' + str(random.randrange(100000))
+HYDRO_ROUTING_KEY = 'v02.post.hydrometric.csv.{prov}.hourly.#'
+HYDRO_MESSAGE = '/hydrometric/csv/{prov}/hourly/{prov}_{station}_hourly_hydrometric.csv'
 
 
 class ECHydro(object):
@@ -41,11 +39,26 @@ class ECHydro(object):
             self.station = closest['ID']
             self.location = closest['Name'].title()
 
-        self.update()
+        self.fetch_new_data()
 
-    @ignore_ratelimit_error
-    @limits(calls=2, period=60)
+        """Setup AMQP"""
+        self.connection = Connection(AMQP_URL)
+        self.queue = Queue(name=HYDRO_QUEUE_NAME,
+                           exchange=Exchange(AMQP_EXCHANGE, no_declare=True),
+                           routing_key=HYDRO_ROUTING_KEY.format(prov=self.province))
+
     def update(self):
+        try:
+            with Consumer(channel=self.connection, queues=self.queue, callbacks=[self.process_message]):
+                self.connection.drain_events(timeout=5)
+        except socket.timeout:
+            pass
+
+    def process_message(self, body, message):
+        if HYDRO_MESSAGE.format(prov=self.province, station=self.station) in body:
+            self.fetch_new_data()
+
+    def fetch_new_data(self):
         """Get the latest data from Environment Canada."""
         hydro_csv_response = requests.get(READINGS_URL.format(prov=self.province,
                                                               station=self.station),
