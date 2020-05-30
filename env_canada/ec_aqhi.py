@@ -46,13 +46,13 @@ class ECAQHI(object):
 
         """Setup AMQP"""
         self.connection = Connection(AMQP_URL)
-        self.weather_queue = Queue(name=AQHI_QUEUE_NAME,
-                                   exchange=Exchange(AMQP_EXCHANGE, no_declare=True),
-                                   routing_key=AQHI_ROUTING_KEY)
+        self.queue = Queue(name=AQHI_QUEUE_NAME,
+                           exchange=Exchange(AMQP_EXCHANGE, no_declare=True),
+                           routing_key=AQHI_ROUTING_KEY)
 
     def update(self):
         try:
-            with Consumer(channel=self.connection, queues=self.weather_queue, callbacks=[self.process_message]):
+            with Consumer(channel=self.connection, queues=self.queue, callbacks=[self.process_message]):
                 self.connection.drain_events(timeout=5)
         except socket.timeout:
             pass
