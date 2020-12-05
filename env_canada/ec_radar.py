@@ -10,17 +10,20 @@ import xml.etree.ElementTree as et
 from aiohttp import ClientSession
 import dateutil.parser
 import imageio
+import pyproj
 
-# Natural Resources Canada
+# United States Geographical Survey
 
-basemap_url = "http://maps.geogratis.gc.ca/wms/CBMT"
+basemap_url = (
+    "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WmsServer"
+)
 basemap_params = {
     "service": "wms",
     "version": "1.3.0",
     "request": "GetMap",
-    "layers": "CBMT",
+    "layers": "0",
     "styles": "",
-    "CRS": "epsg:4326",
+    "CRS": "epsg:3857",
     "format": "image/png",
 }
 
@@ -63,10 +66,13 @@ def get_station_coords(station_id):
     return site_dict[station_id]["lat"], site_dict[station_id]["lon"]
 
 
-def compute_bounding_box(distance, latittude, longitude):
+def compute_bbox_strings(distance, latittude, longitude):
     """
     Modified from https://gist.github.com/alexcpn/f95ae83a7ee0293a5225
     """
+
+    # Compute 4326 boundaries
+
     latittude = math.radians(latittude)
     longitude = math.radians(longitude)
 
@@ -77,15 +83,26 @@ def compute_bounding_box(distance, latittude, longitude):
     lat_max = latittude + angular_distance
 
     delta_longitude = math.asin(math.sin(angular_distance) / math.cos(latittude))
-
     lon_min = longitude - delta_longitude
     lon_max = longitude + delta_longitude
+
     lon_min = round(math.degrees(lon_min), 5)
     lat_max = round(math.degrees(lat_max), 5)
     lon_max = round(math.degrees(lon_max), 5)
     lat_min = round(math.degrees(lat_min), 5)
 
-    return lat_min, lon_min, lat_max, lon_max
+    # Compute 3857 boundaries
+
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    minx, miny = transformer.transform(lon_min, lat_min)
+    maxx, maxy = transformer.transform(lon_max, lat_max)
+
+    strings = {
+        "4326": ",".join([str(lat_min), str(lon_min), str(lat_max), str(lon_max)]),
+        "3857": ",".join([str(minx), str(miny), str(maxx), str(maxy)]),
+    }
+
+    return strings
 
 
 class ECRadar(object):
@@ -118,12 +135,8 @@ class ECRadar(object):
         if station_id:
             coordinates = get_station_coords(station_id.upper())
 
-        self.bbox = compute_bounding_box(radius, coordinates[0], coordinates[1])
-        self.map_params = {
-            "bbox": ",".join([str(coord) for coord in self.bbox]),
-            "width": width,
-            "height": height,
-        }
+        self.bbox = compute_bbox_strings(radius, coordinates[0], coordinates[1])
+        self.map_params = {"width": width, "height": height}
 
         self.width = width
         self.height = height
@@ -143,9 +156,10 @@ class ECRadar(object):
 
     async def _get_basemap(self):
         """Fetch the background map image."""
-        basemap_params.update(self.map_params)
+        params = dict(**basemap_params, **self.map_params, bbox=self.bbox["3857"])
+
         async with ClientSession() as session:
-            response = await session.get(url=basemap_url, params=basemap_params)
+            response = await session.get(url=basemap_url, params=params)
             self.base_bytes = await response.read()
 
     async def _get_legend(self):
@@ -225,6 +239,7 @@ class ECRadar(object):
         params = dict(
             **radar_params,
             **self.map_params,
+            bbox=self.bbox["4326"],
             layers=self.layer,
             time=frame_time.strftime("%Y-%m-%dT%H:%M:00Z")
         )
